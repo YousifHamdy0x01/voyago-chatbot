@@ -49,9 +49,11 @@ Respond ONLY with JSON (no markdown):
 {{"intent": "fayoum_hotels", "language": "ar"}}
 language must be "ar" or "en"."""
 
-def build_response_prompt(user_message: str, intent: str, language: str, data) -> str:
+def build_response_prompt(user_message: str, intent: str, language: str, data, featured_item) -> str:
     data_summary = ""
-    if data:
+    if featured_item:
+        data_summary = f"\n\nThe specific item the user is asking about:\n{json.dumps(featured_item, ensure_ascii=False, indent=2)}"
+    elif data:
         items = data[:20] if isinstance(data, list) else [data]
         data_summary = f"\n\nReal data from our platform:\n{json.dumps(items, ensure_ascii=False, indent=2)}"
 
@@ -74,15 +76,30 @@ def build_response_prompt(user_message: str, intent: str, language: str, data) -
 
 STRICT INSTRUCTIONS:
 - NEVER invent names, places, or prices. Use ONLY the real data provided.
-- Keep your response SHORT (2-3 lines max). Just mention what you found and that you're navigating them there.
-- If user asks highest rated → mention top 1-2 by rating briefly.
-- If user asks cheapest → mention top 1-2 by minPrice briefly.
+- Keep your response SHORT (1-2 lines max).
+- If a specific featured item is provided, mention only that item by name.
 - If emergency → give the numbers directly.
 - If general → be friendly and brief.
-- Do NOT say "I'll take you" or "navigating you". Just say what you found briefly.
 - Do not say you are an AI. Just be Emma.
 
 User message: {user_message}"""
+
+def extract_featured_item(message: str, data: list) -> dict | None:
+    if not data or not isinstance(data, list):
+        return None
+
+    msg_lower = message.lower()
+
+    if any(w in msg_lower for w in ['ارخص', 'أرخص', 'cheap', 'cheapest', 'lowest price', 'اقل سعر', 'أقل سعر']):
+        return min(data, key=lambda x: x.get('minPrice', 9999))
+
+    if any(w in msg_lower for w in ['اعلى', 'أعلى', 'احسن', 'أحسن', 'best', 'highest rated', 'top rated', 'أفضل', 'افضل']):
+        return max(data, key=lambda x: x.get('rating', 0))
+
+    if any(w in msg_lower for w in ['اغلى', 'أغلى', 'expensive', 'most expensive', 'luxury']):
+        return max(data, key=lambda x: x.get('minPrice', 0))
+
+    return None
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -132,11 +149,15 @@ async def chat(request: ChatRequest):
                 except Exception as fetch_err:
                     print(f"[FETCH ERROR] {str(fetch_err)}")
 
-        # Step 3: generate short natural response
+        # Step 3: extract featured_item
+        featured_item = extract_featured_item(request.message, data)
+        print(f"[FEATURED] {featured_item['name'] if featured_item else None}")
+
+        # Step 4: generate short natural response
         response_completion = client.chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[
-                {"role": "user", "content": build_response_prompt(request.message, intent, language, data)}
+                {"role": "user", "content": build_response_prompt(request.message, intent, language, data, featured_item)}
             ],
             max_tokens=200,
             temperature=0.3
@@ -151,7 +172,8 @@ async def chat(request: ChatRequest):
             "action": action,
             "navigate_to": navigate_to,
             "language": language,
-            "data": data
+            "featured_item": featured_item,
+            "data": data if not featured_item else None
         }
 
     except Exception as e:
@@ -162,6 +184,7 @@ async def chat(request: ChatRequest):
             "action": "none",
             "navigate_to": None,
             "language": "en",
+            "featured_item": None,
             "data": None
         }
 
